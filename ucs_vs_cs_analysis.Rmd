@@ -1,0 +1,207 @@
+---
+title: "ucs_vs_cs_analysis"
+output: html_document
+date: "2025-01-24"
+---
+
+ライブラリのダウンロード
+
+```{r}
+#install.packages("dplyr")
+#install.packages("tidyr")
+#install.packages("ggplot2")
+#install.packages("readr")
+#install.packages("gridExtra")
+#install.packages("cluster")
+#install.packages("factoextra")
+
+library(cluster)   # シルエット幅の計算
+library(factoextra) # クラスタリングの可視化
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(gridExtra)
+```
+
+データの読み込み
+
+56648683 はクラウドワークスでid が送信されていないため削除
+12031495 はテストで入れたダミーデータなので削除
+
+
+```{r}
+data <- read.csv("res_estimations_exp1.csv", header=T)
+user_data <- read.csv("res_user_data_exp1.csv", header=T)
+imc_data <- read.csv("user_data_exp2.csv", header=T)
+columnList = c("user_id","stimuli","estimation")
+data <- data[, columnList]
+
+# データ整形：user_idでグループ化し、stimuliごとにカラムを作成
+data <- data %>%
+  pivot_wider(
+    id_cols = user_id,
+    names_from = stimuli,
+    values_from = estimation,
+    names_prefix = "stimuli"
+  )
+data <- data[,1:7]
+
+#imc がfalse のデータを落とす
+
+# データフレームをuser_idで結合
+merged_data <- merge(data, imc_data, by = "user_id", all.x = TRUE)
+# resultがTrueのデータを抽出
+filtered_data <- subset(merged_data, result == "True")
+
+#imc なしの場合のデータ
+#filtered_data <- merged_data
+
+columnList = c("user_id","stimuli1","stimuli2","stimuli3","stimuli4","stimuli5","stimuli6")
+data <- filtered_data[, columnList]
+
+# 規格化を行う関数
+#data <- data
+#for (i in 2:7) {
+#  data[[i]] <- apply(data[i], 1, function(x) {
+#    min_val <- min(data[[i]])
+#    max_val <- max(data[[i]])
+#    (x - min_val) / (max_val - min_val) * 100
+#  })
+#}
+
+
+# 結果の確認
+print(data)
+```
+
+
+階層的クラスタリング
+
+```{r}
+dx = dist(data[,2:7])
+# クラスター分析（Ward法とユークリッド距離使用）
+result <- hclust(dx, method="ward.D2")
+# デンドログラム作図
+plot(result)
+```
+
+```{r}
+# スケーリングを行うか否か 上のコードはスケーリングあり，下は無し
+#scaled_data <- scale(data[, 2:7])
+scaled_data <- data[, 2:7]
+
+# シルエット法による最適なクラスタ数の評価
+fviz_nbclust(scaled_data, kmeans, method = "silhouette") +
+  labs(title = "Optimal Number of Clusters (Silhouette Method)",
+       x = "Number of Clusters", y = "Average Silhouette Width")
+```
+
+```{r}
+# スケーリングを行うか否か 上のコードはスケーリングあり，下は無し
+#scaled_data <- scale(data[, 2:7])
+scaled_data <- data[, 2:7]
+
+# k-means クラスタリング（クラスタ数を k=3 に指定）
+set.seed(123)  # 再現性確保のため乱数シードを設定
+kmeans_result <- kmeans(scaled_data, centers = 3, nstart = 25)
+
+# クラスター結果を因子型に変換
+cluster <- factor(kmeans_result$cluster)
+
+# それぞれのクラスターの人数確認
+table(cluster)
+
+# 元データにクラスター情報を結合
+clustered_data <- cbind(data, cluster)
+
+# クラスタリング結果の確認
+clustered_data
+```
+
+```{r}
+# 信頼区間を計算
+avg_data <- clustered_data %>%
+  pivot_longer(
+    cols = starts_with("stimuli"),
+    names_to = "stimuli",
+    values_to = "value"
+  ) %>%
+  group_by(cluster, stimuli) %>%
+  summarise(
+    mean_value = mean(value, na.rm = TRUE),
+    se = sd(value, na.rm = TRUE) / sqrt(n()),  # 標準誤差
+    .groups = "drop"
+  ) %>%
+  mutate(
+    lower_ci = mean_value - 1.96 * se,  # 95%信頼区間の下限
+    upper_ci = mean_value + 1.96 * se   # 95%信頼区間の上限
+  )
+
+# 折れ線グラフ＋信頼区間を描画
+ggplot(avg_data, aes(x = stimuli, y = mean_value, group = cluster, color = cluster)) +
+  geom_line() +  # 折れ線
+  geom_point() +  # 点
+  geom_ribbon(aes(ymin = lower_ci, ymax = upper_ci, fill = cluster), alpha = 0.2, color = NA) +  # 信頼区間
+  theme_minimal() +
+  labs(
+    title = "Average stimuli by Cluster with 95% CI",
+    x = "stimuli Type",
+    y = "Average Value",
+    color = "Cluster",
+    fill = "Cluster"
+  )
+avg_data['se']
+```
+階層的クラスタリング
+
+```{r}
+dx = dist(data[,2:7])
+# クラスター分析（Ward法とユークリッド距離使用）
+result <- hclust(dx, method="ward.D2")
+# デンドログラム作図
+plot(result)
+```
+```{r}
+cluster <- cutree(result, k=3)  # K=でいくつのクラスターに分けるか指定
+cluster <- factor(cluster)      # 因子の型に変更
+table(cluster)                  # それぞれのクラスターの人数確認
+clustered_data <- cbind(data, cluster) 
+head(clustered_data)
+```
+
+
+```{r}
+# 信頼区間を計算
+avg_data <- clustered_data %>%
+  pivot_longer(
+    cols = starts_with("stimuli"),
+    names_to = "stimuli",
+    values_to = "value"
+  ) %>%
+  group_by(cluster, stimuli) %>%
+  summarise(
+    mean_value = mean(value, na.rm = TRUE),
+    se = sd(value, na.rm = TRUE) / sqrt(n()),  # 標準誤差
+    .groups = "drop"
+  ) %>%
+  mutate(
+    lower_ci = mean_value - 1.96 * se,  # 95%信頼区間の下限
+    upper_ci = mean_value + 1.96 * se   # 95%信頼区間の上限
+  )
+
+# 折れ線グラフ＋信頼区間を描画
+ggplot(avg_data, aes(x = stimuli, y = mean_value, group = cluster, color = cluster)) +
+  geom_line() +  # 折れ線
+  geom_point() +  # 点
+  geom_ribbon(aes(ymin = lower_ci, ymax = upper_ci, fill = cluster), alpha = 0.2, color = NA) +  # 信頼区間
+  theme_minimal() +
+  labs(
+    title = "Average stimuli by Cluster with 95% CI",
+    x = "stimuli Type",
+    y = "Average Value",
+    color = "Cluster",
+    fill = "Cluster"
+  )
+avg_data
+```
